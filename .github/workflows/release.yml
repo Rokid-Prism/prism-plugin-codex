@@ -1,0 +1,85 @@
+name: Release plugin
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-14
+          - target: macos-x64
+            runner: macos-13
+          - target: windows-x64
+            runner: windows-2022
+          - target: linux-x64
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    env:
+      PRISM_PLATFORM: ${{ matrix.target }}
+      npm_config_registry: https://registry.npmmirror.com/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.1
+          registry-url: https://registry.npmmirror.com/
+          cache: npm
+      - name: Require a reproducible SDK lockfile
+        shell: bash
+        run: test -f package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --registry=https://registry.npmmirror.com/
+      - name: Build and test
+        run: |
+          npm run build --if-present
+          npm test
+      - name: Verify manifest and release version
+        shell: bash
+        run: node scripts/verify-release.mjs
+      - name: Protocol probe on the target runner
+        run: node scripts/probe.mjs
+      - name: Keep only runtime dependencies
+        run: npm prune --omit=dev --registry=https://registry.npmmirror.com/
+      - name: Stage target package
+        shell: bash
+        run: |
+          node scripts/stage-release.mjs
+          plugin_id=$(node -e "console.log(require('fs').readFileSync('pluginbridge-plugin.yaml','utf8').match(/^id:\\s*(.+)$/m)[1].trim())")
+          version=$(node -e "console.log(require('fs').readFileSync('pluginbridge-plugin.yaml','utf8').match(/^version:\\s*(.+)$/m)[1].trim())")
+          tar -C release -czf "release/${plugin_id}-${version}-${PRISM_PLATFORM}.tar.gz" "${plugin_id}-${version}-${PRISM_PLATFORM}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Generate checked release metadata
+        run: node scripts/create-release-metadata.mjs release-artifacts
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-artifacts/* --title "$GITHUB_REF_NAME" --generate-notes

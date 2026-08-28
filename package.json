@@ -1,0 +1,17 @@
+{
+  "name": "codex-automation-plugin",
+  "private": true,
+  "version": "0.1.15",
+  "description": "Codex desktop automation adapter scaffold",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js history_stream.test.js"
+  },
+  "dependencies": {
+    "@rokid/pluginbridge-plugin-sdk": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "license": "MIT"
+}
