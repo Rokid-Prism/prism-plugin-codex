@@ -4,6 +4,8 @@ description: Automates Codex Desktop so Prism can browse sessions, read history,
 icon_url: https://registry.npmmirror.com/@lobehub/icons-static-avatar/latest/files/avatars/codex.webp
 icon_svg_url: https://registry.npmmirror.com/@lobehub/icons-static-svg/latest/files/icons/codex.svg
 version: 0.1.15
+protocol_version: "4"
+min_hub_version: 0.1.0
 integration_mode: desktop-automation
 transport: process
 mode: desktop
