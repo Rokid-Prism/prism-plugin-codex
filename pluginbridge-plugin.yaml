@@ -1,0 +1,48 @@
+id: codex
+schema_version: 1
+display_name: Codex
+description: Automates Codex Desktop so Prism can browse sessions, read history, continue threads, and wait for full replies.
+icon_url: https://registry.npmmirror.com/@lobehub/icons-static-avatar/latest/files/avatars/codex.webp
+icon_svg_url: https://registry.npmmirror.com/@lobehub/icons-static-svg/latest/files/icons/codex.svg
+version: 0.1.15
+plugin_protocol_version: "4"
+min_hub_version: 0.1.0
+integration_mode: desktop-automation
+transport: process
+mode: desktop
+runtime_modes: [desktop]
+default_runtime_mode: desktop
+runtime_controls:
+  desktop:
+    model: interactive
+    reasoning: interactive
+    permission: interactive
+runtime_operations:
+  desktop:
+    rename: menu
+    pin: menu
+    archive: menu
+    delete: menu
+managed_launch: true
+# History reads and all retained Plugin state are bounded. Keep a final V8
+# guardrail as well so malformed desktop data cannot grow one Plugin process
+# until it exhausts the host memory.
+runtime_dependencies:
+  node: ">=22.0.0 <23.0.0"
+command: ["${runtime.node}", "--max-old-space-size=320", "index.js"]
+capabilities:
+  native_visible_input: true
+  native_visible_output: true
+  can_attach_session: true
+  can_start_session_with_message: true
+  can_open_draft: true
+  can_list_sessions: true
+  can_read_history: true
+  can_interrupt: true
+  can_approval: true
+  can_forward_sync: true
+  can_reverse_sync: true
+  can_plugin_wide_watch: true
+  can_wait_run: true
+  can_read_status: true
+  can_control_session: true
