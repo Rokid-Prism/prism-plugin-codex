@@ -6618,7 +6618,7 @@ const adapter = {
 };
 
 async function main() {
-  const { serve } = await import("@rokid/pluginbridge-plugin-sdk");
+  const { serve } = await import("@rokid-prism/pluginbridge-plugin-sdk");
   await serve(adapter);
 }
 

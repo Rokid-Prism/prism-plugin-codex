@@ -2,7 +2,7 @@
 
 Codex desktop-automation plugin.
 
-This release uses the public `@rokid/pluginbridge-plugin-sdk` package and the
+This release uses the public `@rokid-prism/pluginbridge-plugin-sdk` package and the
 Hub-managed Node 22 runtime. It does not search for an SDK or a Node binary in
 the Prism application tree.
 

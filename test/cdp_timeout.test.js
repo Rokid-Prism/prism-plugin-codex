@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { CdpPageClient } = require("@rokid/pluginbridge-plugin-sdk/cdp-runtime");
+const { CdpPageClient } = require("@rokid-prism/pluginbridge-plugin-sdk/cdp-runtime");
 const { CodexDesktopController } = require("../codex_cdp.js");
 const { __test } = require("../index.js");
 

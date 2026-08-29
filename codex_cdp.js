@@ -8,7 +8,7 @@ const { spawn, execFile } = require("child_process");
 const { promisify } = require("util");
 
 function requireCdpRuntime() {
-  return require("@rokid/pluginbridge-plugin-sdk/cdp-runtime");
+  return require("@rokid-prism/pluginbridge-plugin-sdk/cdp-runtime");
 }
 
 const {
