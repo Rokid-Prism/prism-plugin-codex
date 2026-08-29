@@ -131,8 +131,9 @@ test("only the Plugin-wide subscription owns the directory watcher", () => {
 
 test("directory watcher includes Codex rollout files for desktop-originated threads", () => {
   const paths = __test.directoryWatchPaths();
-  assert(paths.some((value) => value.endsWith("/.codex/sessions")));
-  assert.equal(__test.directoryWatchEventIsRelevant(paths.find((value) => value.endsWith("/.codex/sessions")), "new-rollout.jsonl"), true);
+  const sessionsPath = paths.find((value) => value.replace(/\\/g, "/").endsWith("/.codex/sessions"));
+  assert(sessionsPath);
+  assert.equal(__test.directoryWatchEventIsRelevant(sessionsPath, "new-rollout.jsonl"), true);
 });
 
 test("Codex CDP target selection ignores auxiliary pages", () => {
