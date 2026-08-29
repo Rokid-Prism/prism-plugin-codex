@@ -26,7 +26,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PRISM_PLATFORM: ${{ matrix.target }}
-      npm_config_registry: https://registry.npmmirror.com/
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,7 +37,7 @@ jobs:
         shell: bash
         run: test -f package-lock.json
       - name: Install locked dependencies
-        run: npm ci --registry=https://registry.npmmirror.com/
+        run: npm ci
       - name: Build and test
         run: |
           npm run build --if-present
@@ -49,7 +48,7 @@ jobs:
       - name: Protocol probe on the target runner
         run: node scripts/probe.mjs
       - name: Keep only runtime dependencies
-        run: npm prune --omit=dev --registry=https://registry.npmmirror.com/
+        run: npm prune --omit=dev
       - name: Stage target package
         shell: bash
         run: |
