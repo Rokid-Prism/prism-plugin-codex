@@ -2,3 +2,23 @@ node_modules/
 release/
 *.tgz
 
+# Locally compiled macOS automation helpers
+bin/codex-click-at
+bin/codex-window-point
+bin/*.build.json
+
+# Test and local tooling artifacts
+coverage/
+test-results/
+.cache/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.log
