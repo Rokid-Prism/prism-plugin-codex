@@ -2771,7 +2771,11 @@ class CodexDesktopController extends CdpPageClient {
           const props = fiber.memoizedProps;
           if (props
             && Object.prototype.hasOwnProperty.call(props, 'homeComposerMode')
-            && Object.prototype.hasOwnProperty.call(props, 'showQuickChatButton')
+            // Codex Desktop renamed this boolean in 151.0.7922.170. Both
+            // variants describe the same global sidebar action; require the
+            // startNewConversation owner as well before accepting it.
+            && (Object.prototype.hasOwnProperty.call(props, 'showQuickChatButton')
+              || Object.prototype.hasOwnProperty.call(props, 'quickChatEnabled'))
             && hooksHaveStartNewConversation(fiber)) return true;
         }
         return false;

@@ -302,6 +302,7 @@ test("global draft creation uses the unique Fiber owner without a shortcut or la
 
   assert.match(clicked, /homeComposerMode/);
   assert.match(clicked, /showQuickChatButton/);
+  assert.match(clicked, /quickChatEnabled/);
   assert.match(clicked, /hooksHaveStartNewConversation/);
   assert.match(clicked, /candidates\.length === 1/);
   assert.doesNotMatch(clicked, /keyPress|New chat|新对话|Ctrl\\\+N|⌘N/);
