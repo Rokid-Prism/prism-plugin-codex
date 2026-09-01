@@ -48,10 +48,9 @@ const HISTORY_MESSAGE_MAX_CHARS = 48 * 1024;
 const HISTORY_PROGRESS_STEP_LIMIT = 64;
 const SESSION_FILE_CACHE_MS = 1200;
 const SESSION_LIST_CACHE_MS = 2500;
-// listSessions feeds the compact mobile directory. The title, first message,
-// and preview are compacted again below, so reading their full (potentially
-// multi-megabyte) SQLite values only risks overflowing sqlite3's stdout buffer.
-const SESSION_LIST_TEXT_MAX_CHARS = 512;
+// listSessions feeds the compact mobile directory. It only needs a short
+// title; message bodies belong to the single-session detail path.
+const SESSION_LIST_TITLE_MAX_CHARS = 256;
 const SESSION_LIST_DEFAULT_LIMIT = 500;
 const EMPTY_SESSION_LIST_CONFIRM_DELAY_MS = 750;
 const DIRECTORY_WATCH_DEBOUNCE_MS = 180;
@@ -1163,7 +1162,7 @@ async function updateThreadStateColumns(threadID, columns) {
   `);
 }
 
-function rowToThreadItem(row, sessionIndexTitle = "") {
+function rowToThreadItem(row, sessionIndexTitle = "", options = {}) {
   const updatedAtMs = Number(row && row.updated_at_ms) || 0;
   const createdAtMs = Number(row && row.created_at_ms) || 0;
   const recencyAtMs = Number(row && row.recency_at_ms) || updatedAtMs || createdAtMs || 0;
@@ -1176,8 +1175,6 @@ function rowToThreadItem(row, sessionIndexTitle = "") {
     provider: firstNonEmpty(row && row.model_provider),
     model: firstNonEmpty(row && row.model, localState.model),
     reasoning_effort: firstNonEmpty(row && row.reasoning_effort, localState.reasoning_effort),
-    first_user_message: compactListText(row && row.first_user_message, 220),
-    preview: compactListText(row && row.preview, 220),
     sandbox_policy: firstNonEmpty(localState.sandbox_policy, row && row.sandbox_policy),
     approval_mode: firstNonEmpty(row && row.approval_mode, localState.approval_mode),
     memory_mode: firstNonEmpty(row && row.memory_mode),
@@ -1187,12 +1184,16 @@ function rowToThreadItem(row, sessionIndexTitle = "") {
     sort_at_ms: String(recencyAtMs || updatedAtMs || ""),
     pinned,
   };
+  if (options.includeMessageFallback) {
+    metadata.first_user_message = compactListText(row && row.first_user_message, 220);
+    metadata.preview = compactListText(row && row.preview, 220);
+  }
   const title = firstNonEmpty(
     compactListText(localState.title, 120),
     compactListText(sessionIndexTitle, 120),
     compactListText(row && row.title, 120),
-    metadata.first_user_message,
-    metadata.preview,
+    options.includeMessageFallback ? metadata.first_user_message : "",
+    options.includeMessageFallback ? metadata.preview : "",
   );
   return {
     id,
@@ -1338,9 +1339,7 @@ async function readThreadsFromState(limit = 0, options = {}) {
   const rows = await queryStateRows(`
     SELECT
       id,
-      substr(title, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS title,
-      substr(first_user_message, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS first_user_message,
-      substr(preview, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS preview,
+      substr(title, 1, ${SESSION_LIST_TITLE_MAX_CHARS}) AS title,
       cwd,
       rollout_path,
       tokens_used,
@@ -1438,7 +1437,9 @@ async function findThreadByIDUncached(threadID, options = {}) {
   if (!rows.length) {
     return null;
   }
-  let item = enrichThreadItemWithRollout(rowToThreadItem(rows[0], sessionIndexMap.get(normalized) || ""));
+  let item = enrichThreadItemWithRollout(rowToThreadItem(rows[0], sessionIndexMap.get(normalized) || "", {
+    includeMessageFallback: true,
+  }));
   if (options && options.includeDesktopSnapshot) {
     const desktopSnapshot = await currentDesktopConversationSnapshot().catch(() => null);
     item = mergeThreadItemWithDesktopRuntime(item, desktopSnapshot);
