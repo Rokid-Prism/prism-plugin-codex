@@ -48,6 +48,11 @@ const HISTORY_MESSAGE_MAX_CHARS = 48 * 1024;
 const HISTORY_PROGRESS_STEP_LIMIT = 64;
 const SESSION_FILE_CACHE_MS = 1200;
 const SESSION_LIST_CACHE_MS = 2500;
+// listSessions feeds the compact mobile directory. The title, first message,
+// and preview are compacted again below, so reading their full (potentially
+// multi-megabyte) SQLite values only risks overflowing sqlite3's stdout buffer.
+const SESSION_LIST_TEXT_MAX_CHARS = 512;
+const SESSION_LIST_DEFAULT_LIMIT = 500;
 const EMPTY_SESSION_LIST_CONFIRM_DELAY_MS = 750;
 const DIRECTORY_WATCH_DEBOUNCE_MS = 180;
 const DIRECTORY_WATCH_RETRY_DELAYS_MS = [120, 360];
@@ -1326,14 +1331,16 @@ async function readThreadsFromState(limit = 0, options = {}) {
   const startedAt = Date.now();
   const sessionIndexMap = new Map(readSessionIndex().map((item) => [item.id, item.title]));
   const requestedLimit = Number(limit);
-  const queryLimit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.max(1, Math.floor(requestedLimit)) : 0;
-  const sqlLimit = queryLimit > 0 ? `\n    LIMIT ${Math.max(queryLimit, Math.min(500, queryLimit * 4))}` : "";
+  const queryLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.max(1, Math.floor(requestedLimit))
+    : SESSION_LIST_DEFAULT_LIMIT;
+  const sqlLimit = `\n    LIMIT ${Math.max(queryLimit, Math.min(SESSION_LIST_DEFAULT_LIMIT, queryLimit * 4))}`;
   const rows = await queryStateRows(`
     SELECT
       id,
-      title,
-      first_user_message,
-      preview,
+      substr(title, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS title,
+      substr(first_user_message, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS first_user_message,
+      substr(preview, 1, ${SESSION_LIST_TEXT_MAX_CHARS}) AS preview,
       cwd,
       rollout_path,
       tokens_used,
