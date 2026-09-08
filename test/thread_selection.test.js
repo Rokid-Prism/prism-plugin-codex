@@ -6,6 +6,7 @@ const {
   isCodexMainPageTarget,
   probeCodexMainPage,
   selectCodexMainPageTarget,
+  __test: cdpTest,
 } = require("../codex_cdp.js");
 const { __test } = require("../index.js");
 
@@ -181,6 +182,15 @@ test("CDP capability probe tolerates the DevTools target publication race", asyn
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("CDP listener discovery only accepts loopback ports", () => {
+  const ports = cdpTest.loopbackListeningPorts([
+    "ChatGPT 37074 xin.he 60u IPv4 0x1 0t0 TCP 127.0.0.1:54416 (LISTEN)",
+    "ChatGPT 37074 xin.he 61u IPv6 0x2 0t0 TCP [::1]:54417 (LISTEN)",
+    "ChatGPT 37074 xin.he 62u IPv4 0x3 0t0 TCP *:54418 (LISTEN)",
+  ].join("\n"));
+  assert.deepEqual(ports, ["54416", "54417"]);
 });
 
 test("approval discovery supports Codex's inline approval surface", () => {

@@ -1425,11 +1425,11 @@ function selectCodexMainPageTarget(targets) {
 async function probeCodexMainPage(options = {}) {
   const overrideUrl = firstNonEmpty(process.env.PRISM_CODEX_CDP_URL, options.cdpUrl);
   const overridePort = firstNonEmpty(process.env.PRISM_CODEX_CDP_PORT, options.cdpPort ? String(options.cdpPort) : "");
-  let listURL = "";
+  let listURLs = [];
   if (overrideUrl) {
-    listURL = overrideUrl.endsWith("/json/list") ? overrideUrl : `${overrideUrl.replace(/\/$/, "")}/json/list`;
+    listURLs = [overrideUrl.endsWith("/json/list") ? overrideUrl : `${overrideUrl.replace(/\/$/, "")}/json/list`];
   } else if (overridePort) {
-    listURL = `http://127.0.0.1:${overridePort}/json/list`;
+    listURLs = [`http://127.0.0.1:${overridePort}/json/list`];
   } else {
     const userDataDir = firstNonEmpty(options.userDataDir, process.env.PRISM_CODEX_USER_DATA_DIR, defaultProfileDir());
     const devtoolsFile = firstNonEmpty(
@@ -1437,28 +1437,34 @@ async function probeCodexMainPage(options = {}) {
       options.devtoolsFile,
       userDataDir === defaultProfileDir() ? defaultDevtoolsFile() : path.join(userDataDir, "DevToolsActivePort"),
     );
-    if (!devtoolsFile || !fs.existsSync(devtoolsFile)) return false;
-    try {
-      const lines = fs.readFileSync(devtoolsFile, "utf8").trim().split("\n");
-      const port = firstNonEmpty(lines[0]);
-      if (!port) return false;
-      listURL = `http://127.0.0.1:${port}/json/list`;
-    } catch {
-      return false;
+    if (devtoolsFile && fs.existsSync(devtoolsFile)) {
+      try {
+        const lines = fs.readFileSync(devtoolsFile, "utf8").trim().split("\n");
+        const port = firstNonEmpty(lines[0]);
+        if (port) listURLs.push(`http://127.0.0.1:${port}/json/list`);
+      } catch {
+        // Newer Codex builds can omit the port file. Fall through to the
+        // managed main process's loopback listener.
+      }
     }
+    listURLs.push(...await managedCdpListURLs(userDataDir));
   }
+  listURLs = [...new Set(listURLs)];
+  if (!listURLs.length) return false;
   const attempts = Math.max(1, Math.min(3, Number(options.attempts) || 3));
   const retryDelayMs = Math.max(0, Math.min(1_000, Number(options.retryDelayMs) || 300));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const response = await fetch(listURL, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(2000),
-      });
-      if (response.ok && selectCodexMainPageTarget(await response.json())) return true;
-    } catch {
-      // The next bounded attempt handles the normal DevToolsActivePort → page
-      // target publication race. A final failure remains fail-closed.
+    for (const listURL of listURLs) {
+      try {
+        const response = await fetch(listURL, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(2000),
+        });
+        if (response.ok && selectCodexMainPageTarget(await response.json())) return true;
+      } catch {
+        // The next bounded attempt handles the normal DevToolsActivePort → page
+        // target publication race. A final failure remains fail-closed.
+      }
     }
     if (attempt + 1 < attempts && retryDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -1529,6 +1535,32 @@ function processMatchesUserDataDir(proc, userDataDir = "") {
     return true;
   }
   return String(proc && proc.command || "").includes(`--user-data-dir=${normalized}`);
+}
+
+function loopbackListeningPorts(lsofOutput = "") {
+  const ports = new Set();
+  for (const line of String(lsofOutput || "").split("\n")) {
+    const match = line.match(/\bTCP\s+(?:127\.0\.0\.1|\[::1\]|localhost):(\d+)\s+\(LISTEN\)/i);
+    if (match && match[1]) ports.add(match[1]);
+  }
+  return [...ports];
+}
+
+async function managedCdpListURLs(userDataDir = "") {
+  if (process.platform !== "darwin" && process.platform !== "linux") return [];
+  const processes = await listCodexProcesses();
+  const urls = new Set();
+  for (const proc of processes) {
+    if (!processMatchesUserDataDir(proc, userDataDir) || !/--remote-debugging-port(?:=|\s)/.test(String(proc.command || ""))) continue;
+    const output = await commandOutput("lsof", ["-nP", "-a", "-p", String(proc.pid), "-iTCP", "-sTCP:LISTEN"], {
+      timeout: 4000,
+      maxBuffer: 1024 * 1024,
+    });
+    for (const port of loopbackListeningPorts(output)) {
+      urls.add(`http://127.0.0.1:${port}/json/list`);
+    }
+  }
+  return [...urls];
 }
 
 async function isCodexRunning(userDataDir = "") {
@@ -1743,6 +1775,14 @@ class CodexDesktopController extends CdpPageClient {
         try { fs.unlinkSync(defaultPortFile); } catch {}
       }
     }
+    for (const listURL of await managedCdpListURLs(targetUserDataDir)) {
+      try {
+        return await this.fetchPageTarget(listURL);
+      } catch {
+        // Keep the CDP-only contract: an open loopback listener is accepted
+        // only when it exposes the actual Codex workspace target.
+      }
+    }
     // A watcher is an observer. It must never turn an explicit user close into
     // a new Desktop process. Dashboard owns the only explicit managed launch
     // action and starts the app before the plugin reconnects over CDP.
@@ -1819,6 +1859,13 @@ class CodexDesktopController extends CdpPageClient {
     while (Date.now() < deadline) {
       if (fs.existsSync(this.managedDevtoolsFile)) {
         return this.fetchPageTarget(await this.devtoolsListUrlFromFile(this.managedDevtoolsFile));
+      }
+      for (const listURL of await managedCdpListURLs(userDataDir)) {
+        try {
+          return await this.fetchPageTarget(listURL);
+        } catch {
+          // Continue until the managed main process publishes the workspace.
+        }
       }
       if (child.exitCode !== null) {
         if (launcherExitsAfterStart && child.exitCode === 0) {
@@ -3624,5 +3671,6 @@ module.exports = {
     goalPlanDOMHelpersSource,
     goalComposerSubmitElementExpression,
     composerEditableElementExpression,
+    loopbackListeningPorts,
   },
 };
