@@ -5784,6 +5784,76 @@ function desktopWatchStatus(runtime = {}) {
   return "idle";
 }
 
+// Desktop-initiated runs never pass through the hub's forward-run waiter, so
+// their terminal push needs an explicit event here. recorded_terminal survives
+// settings/foreground changes, so each terminal transition is emitted once and
+// re-armed by the next non-terminal state.
+const desktopTerminalRunEmitted = new Map();
+
+function desktopTerminalTransition(threadID, status) {
+  const normalized = String(status || "").toLowerCase();
+  if (!["completed", "failed", "interrupted"].includes(normalized)) {
+    desktopTerminalRunEmitted.delete(threadID);
+    return null;
+  }
+  if (desktopTerminalRunEmitted.get(threadID) === normalized) return null;
+  desktopTerminalRunEmitted.set(threadID, normalized);
+  return normalized;
+}
+
+function desktopTerminalRunSummary(status, runSummary, latestSummary) {
+  if (status === "completed") {
+    return firstNonEmpty(latestSummary, runSummary) || "Codex 已完成。";
+  }
+  return firstNonEmpty(runSummary) || (status === "interrupted" ? "Codex 任务已被打断。" : "Codex 执行失败。");
+}
+
+function desktopTerminalRunEvent(threadID, status, summary, sessionHint, detailSnapshot) {
+  return {
+    ID: `desktop-run-${threadID}-${Date.now()}`,
+    Type: `run.${status}`,
+    Status: status,
+    Summary: summary,
+    CreatedAt: new Date().toISOString(),
+    Payload: {
+      thread_id: threadID,
+      native_session: {
+        plugin_id: "codex",
+        native_session_id: threadID,
+        native_thread_id: threadID,
+        surface: "codex-desktop",
+        endpoint: deepLink(threadID),
+        cwd: firstNonEmpty(sessionHint && sessionHint.cwd),
+      },
+      session_hint: sessionHint && typeof sessionHint === "object" ? sessionHint : desktopSessionHint(threadID, {}, status),
+      detail_snapshot: detailSnapshot || undefined,
+    },
+  };
+}
+
+async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint) {
+  const normalized = desktopTerminalTransition(threadID, status);
+  if (!normalized) return;
+  const run = detailSnapshot && typeof detailSnapshot.run === "object" ? detailSnapshot.run : null;
+  const runSummary = run && String(run.status || "").toLowerCase() === normalized ? firstNonEmpty(run.summary) : "";
+  let latestSummary = "";
+  if (normalized === "completed") {
+    const latest = await latestAssistantSummary(threadID).catch(() => null);
+    latestSummary = firstNonEmpty(latest && latest.summary);
+  }
+  const event = desktopTerminalRunEvent(
+    threadID,
+    normalized,
+    desktopTerminalRunSummary(normalized, runSummary, latestSummary),
+    sessionHint,
+    detailSnapshot,
+  );
+  for (const subscriber of desktopWatchSubscribers.values()) {
+    if (subscriber.pluginWide || subscriber.threadID !== threadID) continue;
+    emitDesktopWatchEvent(subscriber, event);
+  }
+}
+
 function detailSnapshotFromDesktopWatch(threadID = "", snapshot = {}, messagesSignature = "", interactiveSurface = null) {
   if (!isThreadID(threadID)) return null;
   const runtime = snapshot && snapshot.runtime && typeof snapshot.runtime === "object" ? snapshot.runtime : {};
@@ -6278,6 +6348,7 @@ async function pollDesktopWatch() {
         }
       }
     }
+    await emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint);
     for (const subscriber of desktopWatchSubscribers.values()) {
       if (!subscriber.pluginWide && subscriber.threadID !== threadID) continue;
       const signature = subscriber.pluginWide ? indexSignature : detailSignature;
@@ -6646,6 +6717,10 @@ module.exports = {
     directoryWatchPaths,
     directoryWatchEventIsRelevant,
     observeDesktopWatchForeground,
+    desktopTerminalTransition,
+    desktopTerminalRunSummary,
+    desktopTerminalRunEvent,
+    emitDesktopTerminalRunEvents,
     readHistoryStream,
     pluginEventName: PLUGIN_EVENT_NAME,
     historyMessagesForDisplay,
