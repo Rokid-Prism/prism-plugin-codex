@@ -10,6 +10,7 @@ const {
   desktopRunFileWatchEvaluate,
   desktopRunFileWatchStart,
   desktopRunFileWatchStop,
+  summarizeRolloutChunk,
 } = __test;
 
 const THREAD_ID = "0af83a58-7e21-4c11-9e64-8ff45b6e91a2";
@@ -79,11 +80,61 @@ test("rollout file watch decides terminal, timeout, or continue", () => {
     desktopRunFileWatchEvaluate(tracker, { terminal: true, failed: true }, 2000),
     { action: "terminal", status: "failed" },
   );
+  // turn_aborted → interrupted 终态，探测器立即关闭
+  assert.deepEqual(
+    desktopRunFileWatchEvaluate(tracker, { terminal: true, failed: false, interrupted: true }, 2000),
+    { action: "terminal", status: "interrupted" },
+  );
   // 30 分钟超时清理，不产生事件
   assert.deepEqual(
     desktopRunFileWatchEvaluate(tracker, { terminal: false }, 1000 + 30 * 60 * 1000),
     { action: "timeout" },
   );
+});
+
+test("rollout chunk parser recognizes task_complete, task_failed, and turn_aborted", () => {
+  const os = require("node:os");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-"));
+  const file = path.join(dir, "rollout.jsonl");
+  fs.writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "部分回答" }] } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted", duration_ms: 1200 } }),
+      "",
+    ].join("\n"),
+  );
+  const chunk = summarizeRolloutChunk(file, 0);
+  assert.equal(chunk.terminal, true);
+  assert.equal(chunk.interrupted, true);
+  assert.equal(chunk.failed, false);
+  assert.equal(chunk.summary, "部分回答");
+
+  fs.writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+      "",
+    ].join("\n"),
+  );
+  const done = summarizeRolloutChunk(file, 0);
+  assert.equal(done.terminal, true);
+  assert.equal(done.interrupted, false);
+  assert.equal(done.failed, false);
+
+  fs.writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_failed", message: "boom" } }),
+      "",
+    ].join("\n"),
+  );
+  const failed = summarizeRolloutChunk(file, 0);
+  assert.equal(failed.terminal, true);
+  assert.equal(failed.failed, true);
+  assert.equal(failed.interrupted, false);
 });
 
 test("rollout file watch registers once per thread and stops cleanly", () => {

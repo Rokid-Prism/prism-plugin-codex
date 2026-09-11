@@ -3623,7 +3623,7 @@ async function latestAssistantSummary(threadID) {
 
 function summarizeRolloutChunk(file, offset = 0) {
   if (!file) {
-    return { summary: "", terminal: false, failed: false, evidence: "" };
+    return { summary: "", terminal: false, failed: false, interrupted: false, evidence: "" };
   }
   try {
     const raw = fs.readFileSync(file, "utf8");
@@ -3632,6 +3632,7 @@ function summarizeRolloutChunk(file, offset = 0) {
     let summary = "";
     let terminal = false;
     let failed = false;
+    let interrupted = false;
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -3652,14 +3653,18 @@ function summarizeRolloutChunk(file, offset = 0) {
       if (row.type === "event_msg" && payload.type === "task_complete") {
         terminal = true;
       }
+      if (payload.type === "turn_aborted") {
+        terminal = true;
+        interrupted = true;
+      }
       if (row.type === "event_msg" && payload.type === "task_failed") {
         terminal = true;
         failed = true;
       }
     }
-    return { summary, terminal, failed, evidence: file };
+    return { summary, terminal, failed, interrupted, evidence: file };
   } catch {
-    return { summary: "", terminal: false, failed: false, evidence: file };
+    return { summary: "", terminal: false, failed: false, interrupted: false, evidence: file };
   }
 }
 
@@ -5835,7 +5840,8 @@ const desktopRunFileWatchers = new Map();
 
 function desktopRunFileWatchEvaluate(tracker, chunk, now) {
   if (chunk && chunk.terminal) {
-    return { action: "terminal", status: chunk.failed ? "failed" : "completed" };
+    const status = chunk.failed ? "failed" : chunk.interrupted ? "interrupted" : "completed";
+    return { action: "terminal", status };
   }
   if (now - tracker.startedAt >= DESKTOP_RUN_FILE_WATCH_TIMEOUT_MS) {
     return { action: "timeout" };
@@ -6707,12 +6713,13 @@ async function waitForRun(session, runID) {
       ? summarizeRolloutChunk(file, Number(runContext.offset || 0))
       : await latestAssistantSummary(threadID);
     if (result.terminal) {
-      const status = result.failed ? "failed" : "completed";
-      const summary = result.summary || (result.failed ? "Codex 自动化执行失败。" : "Codex 已完成。");
+      const status = result.failed ? "failed" : result.interrupted ? "interrupted" : "completed";
+      const summary = result.summary
+        || (result.failed ? "Codex 自动化执行失败。" : result.interrupted ? "Codex 任务已被打断。" : "Codex 已完成。");
       const detailSnapshot = await terminalDetailSnapshot(threadID).catch(() => null);
       return {
         ID: String(runID || randomID()),
-        Type: result.failed ? "run.failed" : "run.completed",
+        Type: result.failed ? "run.failed" : result.interrupted ? "run.interrupted" : "run.completed",
         Status: status,
         Summary: summary,
         Payload: {
@@ -6826,6 +6833,7 @@ module.exports = {
     desktopRunFileWatchEvaluate,
     desktopRunFileWatchStart,
     desktopRunFileWatchStop,
+    summarizeRolloutChunk,
     emitDesktopTerminalRunEvents,
     readHistoryStream,
     pluginEventName: PLUGIN_EVENT_NAME,
