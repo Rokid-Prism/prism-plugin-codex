@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { __test } = require("../index.js");
-const { desktopTerminalTransition, desktopTerminalRunSummary, desktopTerminalRunEvent } = __test;
+const { desktopTerminalTransition, desktopTerminalRunSummary, desktopTerminalRunEvent, desktopTerminalRunReceivers } = __test;
 
 const THREAD_ID = "0af83a58-7e21-4c11-9e64-8ff45b6e91a2";
 
@@ -40,4 +40,17 @@ test("terminal run event carries routing payload for the hub conversation forwar
   assert.equal(event.Payload.session_hint.cwd, "/tmp/proj");
   assert.deepEqual(event.Payload.detail_snapshot, { run: { status: "failed" } });
   assert.match(event.ID, /^desktop-run-/);
+});
+
+test("terminal run events reach plugin-wide watchers and matching threads only", () => {
+  const subscribers = [
+    { name: "hub-plugin-wide", pluginWide: true },
+    { name: "matching-thread", threadID: THREAD_ID },
+    { name: "other-thread", threadID: "11111111-2222-4333-8444-555555555555" },
+  ];
+  const receivers = desktopTerminalRunReceivers(THREAD_ID, subscribers);
+  assert.deepEqual(
+    receivers.map((subscriber) => subscriber.name),
+    ["hub-plugin-wide", "matching-thread"],
+  );
 });

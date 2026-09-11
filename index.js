@@ -5848,10 +5848,17 @@ async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, se
     sessionHint,
     detailSnapshot,
   );
-  for (const subscriber of desktopWatchSubscribers.values()) {
-    if (subscriber.pluginWide || subscriber.threadID !== threadID) continue;
+  for (const subscriber of desktopTerminalRunReceivers(threadID)) {
     emitDesktopWatchEvent(subscriber, event);
   }
+}
+
+// Terminal runs must reach the hub's plugin-wide desktop watch subscription;
+// thread-scoped subscribers only receive events for their own thread.
+function desktopTerminalRunReceivers(threadID, subscribers = desktopWatchSubscribers.values()) {
+  return [...subscribers].filter(
+    (subscriber) => subscriber.pluginWide || subscriber.threadID === threadID,
+  );
 }
 
 function detailSnapshotFromDesktopWatch(threadID = "", snapshot = {}, messagesSignature = "", interactiveSurface = null) {
@@ -6720,6 +6727,7 @@ module.exports = {
     desktopTerminalTransition,
     desktopTerminalRunSummary,
     desktopTerminalRunEvent,
+    desktopTerminalRunReceivers,
     emitDesktopTerminalRunEvents,
     readHistoryStream,
     pluginEventName: PLUGIN_EVENT_NAME,
