@@ -2,20 +2,33 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { __test } = require("../index.js");
-const { desktopTerminalTransition, desktopTerminalRunSummary, desktopTerminalRunEvent, desktopTerminalRunReceivers } = __test;
+const {
+  desktopTerminalTransition,
+  desktopTerminalRunSummary,
+  desktopTerminalRunEvent,
+  desktopTerminalRunReceivers,
+  desktopRunFileWatchEvaluate,
+  desktopRunFileWatchStart,
+  desktopRunFileWatchStop,
+} = __test;
 
 const THREAD_ID = "0af83a58-7e21-4c11-9e64-8ff45b6e91a2";
 
-test("terminal run events emit once per transition and re-arm on non-terminal state", () => {
-  assert.equal(desktopTerminalTransition(THREAD_ID, "completed"), "completed");
-  // recorded_terminal 残留：完成后改设置/切前台仍是 completed，不得重发
-  assert.equal(desktopTerminalTransition(THREAD_ID, "completed"), null);
-  // 新一轮运行使状态离开终态，重新武装
+test("terminal dedup keys on rollout evidence: more content is a new run, UI lag never re-arms", () => {
+  assert.equal(desktopTerminalTransition(THREAD_ID, "completed", 100), "completed");
+  // recorded_terminal 残留：同一证据的重复终态不重发
+  assert.equal(desktopTerminalTransition(THREAD_ID, "completed", 100), null);
+  // UI 状态滞后（文件已终态、页面还在 running）不得解除武装，也不得重发
   assert.equal(desktopTerminalTransition(THREAD_ID, "running"), null);
-  assert.equal(desktopTerminalTransition(THREAD_ID, "completed"), "completed");
-  assert.equal(desktopTerminalTransition(THREAD_ID, "failed"), "failed");
-  assert.equal(desktopTerminalTransition(THREAD_ID, "failed"), null);
+  assert.equal(desktopTerminalTransition(THREAD_ID, "completed", 100), null);
+  // 追问新一轮：rollout 追加了更多内容 → 新终态
+  assert.equal(desktopTerminalTransition(THREAD_ID, "completed", 260), "completed");
+  // 状态变化（completed → failed）总是新终态
+  assert.equal(desktopTerminalTransition(THREAD_ID, "failed", 300), "failed");
+  assert.equal(desktopTerminalTransition(THREAD_ID, "failed", 300), null);
+  // 无证据时按时间窗兜底：10s 内同状态不重发
   assert.equal(desktopTerminalTransition(THREAD_ID, "idle"), null);
+  assert.equal(desktopTerminalTransition(THREAD_ID, "interrupted", 0), "interrupted");
   assert.equal(desktopTerminalTransition(THREAD_ID, ""), null);
 });
 
@@ -53,4 +66,31 @@ test("terminal run events reach plugin-wide watchers and matching threads only",
     receivers.map((subscriber) => subscriber.name),
     ["hub-plugin-wide", "matching-thread"],
   );
+});
+
+test("rollout file watch decides terminal, timeout, or continue", () => {
+  const tracker = { startedAt: 1000 };
+  assert.deepEqual(desktopRunFileWatchEvaluate(tracker, { terminal: false }, 2000), { action: "continue" });
+  assert.deepEqual(
+    desktopRunFileWatchEvaluate(tracker, { terminal: true, failed: false }, 2000),
+    { action: "terminal", status: "completed" },
+  );
+  assert.deepEqual(
+    desktopRunFileWatchEvaluate(tracker, { terminal: true, failed: true }, 2000),
+    { action: "terminal", status: "failed" },
+  );
+  // 30 分钟超时清理，不产生事件
+  assert.deepEqual(
+    desktopRunFileWatchEvaluate(tracker, { terminal: false }, 1000 + 30 * 60 * 1000),
+    { action: "timeout" },
+  );
+});
+
+test("rollout file watch registers once per thread and stops cleanly", () => {
+  const fakeFile = "/tmp/definitely-missing-rollout.jsonl";
+  desktopRunFileWatchStart(THREAD_ID, fakeFile);
+  // 重复注册必须被忽略（一个线程只有一个探测定时器），停止可重复调用
+  desktopRunFileWatchStart(THREAD_ID, fakeFile);
+  desktopRunFileWatchStop(THREAD_ID);
+  desktopRunFileWatchStop(THREAD_ID);
 });

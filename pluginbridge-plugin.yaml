@@ -4,7 +4,7 @@ display_name: Codex
 description: Automates Codex Desktop so Prism can browse sessions, read history, continue threads, and wait for full replies.
 icon_url: https://registry.npmmirror.com/@lobehub/icons-static-avatar/latest/files/avatars/codex.webp
 icon_svg_url: https://registry.npmmirror.com/@lobehub/icons-static-svg/latest/files/icons/codex.svg
-version: 0.1.20
+version: 0.1.21
 plugin_protocol_version: "4"
 min_hub_version: 0.1.0
 integration_mode: desktop-automation

@@ -5784,21 +5784,110 @@ function desktopWatchStatus(runtime = {}) {
   return "idle";
 }
 
+const DESKTOP_RUN_FILE_WATCH_POLL_MS = 2000;
+const DESKTOP_RUN_FILE_WATCH_TIMEOUT_MS = 30 * 60 * 1000;
+// Evidence-free fallback: same-status duplicates within this window are UI lag,
+// not a new run.
+const DESKTOP_TERMINAL_REARM_FALLBACK_MS = 10 * 1000;
+
 // Desktop-initiated runs never pass through the hub's forward-run waiter, so
-// their terminal push needs an explicit event here. recorded_terminal survives
-// settings/foreground changes, so each terminal transition is emitted once and
-// re-armed by the next non-terminal state.
+// their terminal push needs an explicit event here. Terminal state is data
+// state: it comes from the thread's rollout file, never from the foreground
+// watcher alone. Each emitted terminal records the rollout evidence (file
+// content length) it was based on; a later terminal with more evidence is a
+// genuinely new run. Desktop UI status lags the rollout data, so a non-
+// terminal UI status never disarms an emitted terminal.
 const desktopTerminalRunEmitted = new Map();
 
-function desktopTerminalTransition(threadID, status) {
+function desktopTerminalTransition(threadID, status, evidence = 0) {
   const normalized = String(status || "").toLowerCase();
   if (!["completed", "failed", "interrupted"].includes(normalized)) {
-    desktopTerminalRunEmitted.delete(threadID);
     return null;
   }
-  if (desktopTerminalRunEmitted.get(threadID) === normalized) return null;
-  desktopTerminalRunEmitted.set(threadID, normalized);
+  const recorded = desktopTerminalRunEmitted.get(threadID);
+  if (recorded) {
+    const newerRun = normalized !== recorded.status
+      || (evidence > 0 && recorded.evidence > 0 && evidence > recorded.evidence)
+      || (evidence === 0 && recorded.evidence === 0 && Date.now() - recorded.at >= DESKTOP_TERMINAL_REARM_FALLBACK_MS);
+    if (!newerRun) return null;
+  }
+  desktopTerminalRunEmitted.set(threadID, { status: normalized, evidence, at: Date.now() });
   return normalized;
+}
+
+// Position marker for terminal dedup: the rollout file's content length at
+// detection time. Bytes appended after a terminal belong to the next run.
+async function rolloutEvidenceLength(threadID) {
+  if (!isThreadID(threadID)) return 0;
+  const file = await findRolloutFile(threadID).catch(() => "");
+  if (!file) return 0;
+  try {
+    return fs.readFileSync(file, "utf8").length;
+  } catch {
+    return 0;
+  }
+}
+
+// A run observed in the desktop UI keeps appending to its rollout file after
+// the user switches to another conversation, so terminal detection must not
+// depend on the thread being foreground. Track the rollout file directly.
+const desktopRunFileWatchers = new Map();
+
+function desktopRunFileWatchEvaluate(tracker, chunk, now) {
+  if (chunk && chunk.terminal) {
+    return { action: "terminal", status: chunk.failed ? "failed" : "completed" };
+  }
+  if (now - tracker.startedAt >= DESKTOP_RUN_FILE_WATCH_TIMEOUT_MS) {
+    return { action: "timeout" };
+  }
+  return { action: "continue" };
+}
+
+function desktopRunFileWatchStart(threadID, rolloutFile = "") {
+  if (!isThreadID(threadID) || desktopRunFileWatchers.has(threadID)) return;
+  const tracker = { file: rolloutFile, offset: 0, startedAt: Date.now() };
+  if (rolloutFile) {
+    try {
+      tracker.offset = fs.readFileSync(rolloutFile, "utf8").length;
+    } catch {
+      tracker.offset = 0;
+    }
+  }
+  tracker.timer = setInterval(() => {
+    desktopRunFileWatchPoll(threadID).catch(() => {});
+  }, DESKTOP_RUN_FILE_WATCH_POLL_MS);
+  if (typeof tracker.timer.unref === "function") tracker.timer.unref();
+  desktopRunFileWatchers.set(threadID, tracker);
+}
+
+function desktopRunFileWatchStop(threadID) {
+  const tracker = desktopRunFileWatchers.get(threadID);
+  if (!tracker) return;
+  desktopRunFileWatchers.delete(threadID);
+  if (tracker.timer) clearInterval(tracker.timer);
+}
+
+async function desktopRunFileWatchPoll(threadID) {
+  const tracker = desktopRunFileWatchers.get(threadID);
+  if (!tracker) return;
+  let file = tracker.file;
+  if (!file || !fs.existsSync(file)) {
+    file = tracker.file = await findRolloutFile(threadID).catch(() => "");
+    if (file) {
+      try {
+        tracker.offset = fs.readFileSync(file, "utf8").length;
+      } catch {
+        tracker.offset = 0;
+      }
+    }
+  }
+  const chunk = file ? summarizeRolloutChunk(file, tracker.offset) : null;
+  const decision = desktopRunFileWatchEvaluate(tracker, chunk, Date.now());
+  if (decision.action === "continue") return;
+  desktopRunFileWatchStop(threadID);
+  if (decision.action === "terminal") {
+    await emitDesktopTerminalRunEvents(threadID, decision.status, null, null);
+  }
 }
 
 function desktopTerminalRunSummary(status, runSummary, latestSummary) {
@@ -5832,8 +5921,10 @@ function desktopTerminalRunEvent(threadID, status, summary, sessionHint, detailS
 }
 
 async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint) {
-  const normalized = desktopTerminalTransition(threadID, status);
+  const evidence = await rolloutEvidenceLength(threadID);
+  const normalized = desktopTerminalTransition(threadID, status, evidence);
   if (!normalized) return;
+  desktopRunFileWatchStop(threadID);
   const run = detailSnapshot && typeof detailSnapshot.run === "object" ? detailSnapshot.run : null;
   const runSummary = run && String(run.status || "").toLowerCase() === normalized ? firstNonEmpty(run.summary) : "";
   let latestSummary = "";
@@ -6356,6 +6447,10 @@ async function pollDesktopWatch() {
       }
     }
     await emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint);
+    if (status === "running" || status === "waiting_approval") {
+      const trackedRollout = await findRolloutFile(threadID).catch(() => "");
+      desktopRunFileWatchStart(threadID, trackedRollout);
+    }
     for (const subscriber of desktopWatchSubscribers.values()) {
       if (!subscriber.pluginWide && subscriber.threadID !== threadID) continue;
       const signature = subscriber.pluginWide ? indexSignature : detailSignature;
@@ -6728,6 +6823,9 @@ module.exports = {
     desktopTerminalRunSummary,
     desktopTerminalRunEvent,
     desktopTerminalRunReceivers,
+    desktopRunFileWatchEvaluate,
+    desktopRunFileWatchStart,
+    desktopRunFileWatchStop,
     emitDesktopTerminalRunEvents,
     readHistoryStream,
     pluginEventName: PLUGIN_EVENT_NAME,
