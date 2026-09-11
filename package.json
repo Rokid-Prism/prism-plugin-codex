@@ -1,7 +1,7 @@
 {
   "name": "codex-automation-plugin",
   "private": true,
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Codex desktop automation adapter scaffold",
   "main": "index.js",
   "scripts": {

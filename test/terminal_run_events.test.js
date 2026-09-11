@@ -145,3 +145,16 @@ test("rollout file watch registers once per thread and stops cleanly", () => {
   desktopRunFileWatchStop(THREAD_ID);
   desktopRunFileWatchStop(THREAD_ID);
 });
+
+test("stale recorded_terminal completions are not fresh enough to push", () => {
+  const { desktopTerminalFreshEnough } = __test;
+  const now = Date.now();
+  // 刚写完的 rollout（10s 前）→ 新鲜
+  assert.equal(desktopTerminalFreshEnough(now - 10 * 1000, now), true);
+  // 14 分钟前 → 仍在宽限内
+  assert.equal(desktopTerminalFreshEnough(now - 14 * 60 * 1000, now), true);
+  // 1 小时前的完成（切回旧会话场景）→ 不推
+  assert.equal(desktopTerminalFreshEnough(now - 60 * 60 * 1000, now), false);
+  // 文件不存在 → 不推（数据状态必须能被文件证实）
+  assert.equal(desktopTerminalFreshEnough(0, now), false);
+});

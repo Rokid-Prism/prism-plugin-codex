@@ -5820,17 +5820,42 @@ function desktopTerminalTransition(threadID, status, evidence = 0) {
   return normalized;
 }
 
-// Position marker for terminal dedup: the rollout file's content length at
-// detection time. Bytes appended after a terminal belong to the next run.
-async function rolloutEvidenceLength(threadID) {
-  if (!isThreadID(threadID)) return 0;
-  const file = await findRolloutFile(threadID).catch(() => "");
-  if (!file) return 0;
-  try {
-    return fs.readFileSync(file, "utf8").length;
-  } catch {
-    return 0;
+// Position marker for terminal dedup: the rollout file's size at detection
+// time. Bytes appended after a terminal belong to the next run.
+const rolloutPathCache = new Map();
+const ROLLOUT_PATH_CACHE_TTL_MS = 60 * 1000;
+
+async function resolveRolloutFile(threadID) {
+  if (!isThreadID(threadID)) return "";
+  const cached = rolloutPathCache.get(threadID);
+  if (cached && (cached.path || Date.now() - cached.resolvedAt < ROLLOUT_PATH_CACHE_TTL_MS)) {
+    return cached.path;
   }
+  const path = await findRolloutFile(threadID).catch(() => "");
+  rolloutPathCache.set(threadID, { path, resolvedAt: Date.now() });
+  return path;
+}
+
+async function rolloutEvidence(threadID) {
+  const file = await resolveRolloutFile(threadID);
+  if (!file) return { path: "", size: 0, mtimeMs: 0 };
+  try {
+    const stat = fs.statSync(file);
+    return { path: file, size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch {
+    return { path: file, size: 0, mtimeMs: 0 };
+  }
+}
+
+// recorded_terminal survives long after a run ends. A completion observed in
+// the desktop UI is only worth pushing when the rollout file was written
+// recently; otherwise it is a stale projection (e.g. first visit after a
+// plugin restart) and the tracker already handled any real completion.
+const DESKTOP_TERMINAL_FRESH_MS = 15 * 60 * 1000;
+
+function desktopTerminalFreshEnough(mtimeMs, now = Date.now()) {
+  if (!mtimeMs) return false;
+  return now - mtimeMs <= DESKTOP_TERMINAL_FRESH_MS;
 }
 
 // A run observed in the desktop UI keeps appending to its rollout file after
@@ -5926,9 +5951,12 @@ function desktopTerminalRunEvent(threadID, status, summary, sessionHint, detailS
   };
 }
 
-async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint) {
-  const evidence = await rolloutEvidenceLength(threadID);
-  const normalized = desktopTerminalTransition(threadID, status, evidence);
+async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint, { requireFresh = false } = {}) {
+  const evidenceInfo = await rolloutEvidence(threadID);
+  if (requireFresh && !desktopTerminalFreshEnough(evidenceInfo.mtimeMs)) {
+    return;
+  }
+  const normalized = desktopTerminalTransition(threadID, status, evidenceInfo.size);
   if (!normalized) return;
   desktopRunFileWatchStop(threadID);
   const run = detailSnapshot && typeof detailSnapshot.run === "object" ? detailSnapshot.run : null;
@@ -6452,9 +6480,9 @@ async function pollDesktopWatch() {
         }
       }
     }
-    await emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint);
+    await emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, sessionHint, { requireFresh: true });
     if (status === "running" || status === "waiting_approval") {
-      const trackedRollout = await findRolloutFile(threadID).catch(() => "");
+      const trackedRollout = await resolveRolloutFile(threadID);
       desktopRunFileWatchStart(threadID, trackedRollout);
     }
     for (const subscriber of desktopWatchSubscribers.values()) {
@@ -6833,6 +6861,7 @@ module.exports = {
     desktopRunFileWatchEvaluate,
     desktopRunFileWatchStart,
     desktopRunFileWatchStop,
+    desktopTerminalFreshEnough,
     summarizeRolloutChunk,
     emitDesktopTerminalRunEvents,
     readHistoryStream,
