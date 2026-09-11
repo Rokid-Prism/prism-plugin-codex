@@ -5804,6 +5804,43 @@ const DESKTOP_TERMINAL_REARM_FALLBACK_MS = 10 * 1000;
 // terminal UI status never disarms an emitted terminal.
 const desktopTerminalRunEmitted = new Map();
 
+// Evidence survives plugin restarts via the plugin state file: the hub
+// restarts plugin processes freely (updates, recovery), and a lost dedup
+// record would re-push a run that completed just before the restart.
+const DESKTOP_TERMINAL_RUN_STATE_LIMIT = 100;
+
+function hydrateDesktopTerminalRuns() {
+  try {
+    const saved = readPluginState().desktopTerminalRuns;
+    if (!saved || typeof saved !== "object") return;
+    for (const [threadID, entry] of Object.entries(saved)) {
+      if (!entry || typeof entry !== "object" || !isThreadID(threadID)) continue;
+      const status = String(entry.status || "").toLowerCase();
+      if (!["completed", "failed", "interrupted"].includes(status)) continue;
+      desktopTerminalRunEmitted.set(threadID, {
+        status,
+        evidence: Number(entry.evidence) || 0,
+        at: Number(entry.at) || 0,
+      });
+    }
+  } catch {}
+}
+
+function persistDesktopTerminalRuns() {
+  try {
+    const state = readPluginState();
+    const entries = [...desktopTerminalRunEmitted.entries()]
+      .sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0))
+      .slice(0, DESKTOP_TERMINAL_RUN_STATE_LIMIT);
+    const saved = {};
+    for (const [threadID, entry] of entries) {
+      saved[threadID] = { status: entry.status, evidence: entry.evidence, at: entry.at };
+    }
+    state.desktopTerminalRuns = saved;
+    writePluginState(state);
+  } catch {}
+}
+
 function desktopTerminalTransition(threadID, status, evidence = 0) {
   const normalized = String(status || "").toLowerCase();
   if (!["completed", "failed", "interrupted"].includes(normalized)) {
@@ -5819,6 +5856,8 @@ function desktopTerminalTransition(threadID, status, evidence = 0) {
   desktopTerminalRunEmitted.set(threadID, { status: normalized, evidence, at: Date.now() });
   return normalized;
 }
+
+hydrateDesktopTerminalRuns();
 
 // Position marker for terminal dedup: the rollout file's size at detection
 // time. Bytes appended after a terminal belong to the next run.
@@ -5928,9 +5967,11 @@ function desktopTerminalRunSummary(status, runSummary, latestSummary) {
   return firstNonEmpty(runSummary) || (status === "interrupted" ? "Codex 任务已被打断。" : "Codex 执行失败。");
 }
 
-function desktopTerminalRunEvent(threadID, status, summary, sessionHint, detailSnapshot) {
+function desktopTerminalRunEvent(threadID, status, summary, sessionHint, detailSnapshot, evidence = 0) {
   return {
-    ID: `desktop-run-${threadID}-${Date.now()}`,
+    // Deterministic per settled run: the gateway deduplicates on the payload
+    // event_id, so a re-emission after a plugin restart must keep this stable.
+    ID: `desktop-run:${threadID}:${status}:${evidence}`,
     Type: `run.${status}`,
     Status: status,
     Summary: summary,
@@ -5958,6 +5999,7 @@ async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, se
   }
   const normalized = desktopTerminalTransition(threadID, status, evidenceInfo.size);
   if (!normalized) return;
+  persistDesktopTerminalRuns();
   desktopRunFileWatchStop(threadID);
   const run = detailSnapshot && typeof detailSnapshot.run === "object" ? detailSnapshot.run : null;
   const runSummary = run && String(run.status || "").toLowerCase() === normalized ? firstNonEmpty(run.summary) : "";
@@ -5972,6 +6014,7 @@ async function emitDesktopTerminalRunEvents(threadID, status, detailSnapshot, se
     desktopTerminalRunSummary(normalized, runSummary, latestSummary),
     sessionHint,
     detailSnapshot,
+    evidenceInfo.size,
   );
   for (const subscriber of desktopTerminalRunReceivers(threadID)) {
     emitDesktopWatchEvent(subscriber, event);

@@ -53,7 +53,8 @@ test("terminal run event carries routing payload for the hub conversation forwar
   assert.equal(event.Payload.native_session.surface, "codex-desktop");
   assert.equal(event.Payload.session_hint.cwd, "/tmp/proj");
   assert.deepEqual(event.Payload.detail_snapshot, { run: { status: "failed" } });
-  assert.match(event.ID, /^desktop-run-/);
+  // 确定性 ID：同一次结算重发必须保持稳定，gateway 依赖它去重
+  assert.equal(event.ID, `desktop-run:${THREAD_ID}:failed:0`);
 });
 
 test("terminal run events reach plugin-wide watchers and matching threads only", () => {
