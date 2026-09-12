@@ -9,9 +9,12 @@ plugin_protocol_version: "4"
 min_hub_version: 0.1.0
 integration_mode: desktop-automation
 transport: process
-mode: desktop
 runtime_modes: [desktop]
 default_runtime_mode: desktop
+managed_launch_specs:
+  - kind: desktop-app
+    app: codex
+    ready: probe
 runtime_controls:
   desktop:
     model: interactive
